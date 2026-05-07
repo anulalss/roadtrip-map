@@ -1,31 +1,34 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Trip Plan - Live Sync Pro</title>
+    <title>Trip Plan - GitHub Edition</title>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <style>
-        body { margin: 0; padding: 0; background: #222; }
+        body { margin: 0; padding: 0; background: #222; font-family: sans-serif; }
         #map { height: 100vh; height: 100dvh; width: 100vw; }
         #loading {
             position: absolute; top: 10px; left: 50px; z-index: 1000;
-            background: white; padding: 8px 15px; border-radius: 5px;
-            font-family: sans-serif; font-weight: bold; box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+            background: white; padding: 10px 20px; border-radius: 8px;
+            font-weight: bold; box-shadow: 0 4px 15px rgba(0,0,0,0.3);
         }
-        .info-box { font-family: sans-serif; font-size: 13px; line-height: 1.4; min-width: 180px; }
+        .info-box { font-size: 13px; line-height: 1.4; min-width: 180px; }
         .hotel-tag { background: #e8f4f8; border: 1px solid #3498db; padding: 5px; border-radius: 4px; margin-top: 5px; font-weight: bold; display: block; color: #2980b9; }
-        .refresh-btn { background: #27ae60; color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; font-weight: bold; box-shadow: 0 2px 5px rgba(0,0,0,0.3); }
+        .refresh-btn { background: #27ae60; color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; font-weight: bold; }
         .sos-btn { background: #e74c3c; color: white; border: none; padding: 8px; border-radius: 4px; cursor: pointer; width: 100%; font-weight: bold; margin-top: 10px; }
     </style>
 </head>
 <body>
-    <div id="loading">Connecting to Trip Plan... <span id="progress"></span></div>
+    <div id="loading">📡 Syncing with Trip Plan...</div>
     <div id="map"></div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script>
-        const CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vRXv6-bYGpE2J4FCXwdDSoRDNl7UhseCyaURUhIEnF-ZkI12GS7UD0pM4UQIoe96EJPJJavGnCuAWbI/pub?gid=327253181&single=true&output=csv';
+        const SHEET_ID = '1EzJ4cRVo-qj0ciKSfd1dWFLKh3zzH60HMDWh9GDmtJY';
+        const GID = '327253181';
+        // Primary URL (Direct)
+        const CSV_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${GID}`;
 
         const cityCoords = {
             'Trivandrum': [8.5241, 76.9366], 'Bangalore': [12.9716, 77.5946], 'Hyderabad': [17.3850, 78.4867],
@@ -36,7 +39,8 @@
             'Agra': [27.1767, 78.0081], 'Jhansi': [25.4484, 78.5685]
         };
 
-        var map = L.map('map').setView([22.0, 78.0], 5);
+        var map = L.map('map', {zoomControl: false}).setView([22.0, 78.0], 5);
+        L.control.zoom({position: 'topright'}).addTo(map);
         L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png').addTo(map);
 
         var routeGroup = L.layerGroup().addTo(map);
@@ -44,10 +48,16 @@
 
         async function loadData() {
             try {
-                const response = await fetch(CSV_URL);
-                const csvText = await response.text();
+                // Try direct fetch first
+                let response = await fetch(CSV_URL);
                 
-                // Robust CSV parsing
+                // If direct fetch fails (CORS), use a free proxy
+                if (!response.ok) {
+                    const proxyUrl = 'https://api.allorigins.win/raw?url=' + encodeURIComponent(CSV_URL);
+                    response = await fetch(proxyUrl);
+                }
+
+                const csvText = await response.text();
                 const rows = csvText.split(/\r?\n/).map(row => {
                     return row.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(cell => 
                         cell.replace(/^"|"$/g, '').trim()
@@ -64,12 +74,9 @@
                     if(rowData['To']) itinerary.push(rowData);
                 }
                 
-                if(itinerary.length > 0) processTrip(itinerary);
-                else document.getElementById('loading').innerHTML = "⚠️ No destinations found in sheet.";
-
+                processTrip(itinerary);
             } catch (e) {
-                document.getElementById('loading').innerHTML = "⚠️ Connection Failed. Re-syncing...";
-                setTimeout(loadData, 5000);
+                document.getElementById('loading').innerHTML = "⚠️ Sync Error. Try refreshing the page.";
             }
         }
 
@@ -82,13 +89,11 @@
                 let currentPoint = (!isNaN(lat) && !isNaN(lng)) ? [lat, lng] : cityCoords[row['To']];
 
                 if (currentPoint) {
-                    // Marker for stays
                     L.marker(currentPoint, {
                         icon: L.divIcon({ html: `<div style="background:#e74c3c; width:12px; height:12px; border-radius:50%; border:2px solid white; box-shadow: 0 0 5px rgba(0,0,0,0.5);"></div>`, className: '', iconSize: [12, 12] })
                     }).bindPopup(`<b>Day ${row['Day']}: ${row['To']}</b><br>Stay: ${row['Night Stay']}`).addTo(markerGroup);
 
-                    // Route logic with caching
-                    let cacheKey = `route_v4_${row['From']}_${row['To']}_${JSON.stringify(currentPoint)}`;
+                    let cacheKey = `trip_v6_${row['From']}_${row['To']}_${JSON.stringify(currentPoint)}`;
                     let cached = localStorage.getItem(cacheKey);
                     let poly;
 
@@ -103,18 +108,17 @@
                                 localStorage.setItem(cacheKey, JSON.stringify(poly));
                             }
                             await new Promise(r => setTimeout(r, 600)); 
-                        } catch (e) { console.warn("Routing skipped for Day " + row['Day']); }
+                        } catch (e) { console.warn("Route skip"); }
                     }
 
                     if(poly) {
                         L.polyline(poly, { color: 'white', weight: 8, opacity: 0.4 }).addTo(routeGroup);
                         L.polyline(poly, { color: '#3498db', weight: 4, opacity: 0.8 })
-                            .bindPopup(`<div class="info-box"><b>🗓️ Day ${row['Day']}</b><br>${row['From']} ➔ ${row['To']}<br><span class="hotel-tag">🏨 ${row['Night Stay']}</span><br><b>Stop:</b> ${row['Key Stops']}<br><b>Time:</b> ${row['Drive Time']}</div>`)
+                            .bindPopup(`<div class="info-box"><b>🗓️ Day ${row['Day']}</b><br>${row['From']} ➔ ${row['To']}<br><span class="hotel-tag">🏨 ${row['Night Stay']}</span><br><b>Stop:</b> ${row['Key Stops']}</div>`)
                             .addTo(routeGroup);
                     }
                     lastPoint = currentPoint;
                 }
-                document.getElementById('progress').innerText = `Day ${row['Day']} Loaded`;
             }
             document.getElementById('loading').style.display = 'none';
             addSyncBtn();
@@ -130,18 +134,16 @@
             ctrl.addTo(map);
         }
 
-        // GPS Location
         var uMarker = L.circleMarker([0,0], { radius: 8, fillColor: "#1a73e8", color: "#fff", weight: 3, opacity: 1, fillOpacity: 1 });
         var locateControl = L.control({position: 'topleft'});
         locateControl.onAdd = function() {
             var div = L.DomUtil.create('div', 'leaflet-bar');
-            div.style.background = 'white'; div.style.padding = '8px'; div.style.cursor = 'pointer'; div.style.fontWeight = 'bold';
-            div.innerHTML = '📍';
+            div.style.background = 'white'; div.style.padding = '8px'; div.style.cursor = 'pointer'; div.innerHTML = '📍';
             div.onclick = function() {
-                navigator.geolocation.watchPosition(pos => {
+                navigator.geolocation.getCurrentPosition(pos => {
                     let lat = pos.coords.latitude.toFixed(5), lng = pos.coords.longitude.toFixed(5);
                     uMarker.setLatLng([lat, lng]).addTo(map).bindPopup(`<b>You</b><br><button class="sos-btn" onclick="navigator.clipboard.writeText('${lat},${lng}');alert('GPS Copied!')">🆘 Copy GPS</button>`);
-                    map.setView([lat, lng], 13);
+                    map.setView([lat, lng], 14);
                 }, null, {enableHighAccuracy: true});
             };
             return div;
