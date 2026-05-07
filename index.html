@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Trip Plan - Live Sync Pro</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body { margin: 0; padding: 0; background: #222; }
+        #map { height: 100vh; height: 100dvh; width: 100vw; }
+        #loading {
+            position: absolute; top: 10px; left: 50px; z-index: 1000;
+            background: white; padding: 8px 15px; border-radius: 5px;
+            font-family: sans-serif; font-weight: bold; box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+        }
+        .info-box { font-family: sans-serif; font-size: 13px; line-height: 1.4; min-width: 180px; }
+        .hotel-tag { background: #e8f4f8; border: 1px solid #3498db; padding: 5px; border-radius: 4px; margin-top: 5px; font-weight: bold; display: block; color: #2980b9; }
+        .refresh-btn { background: #27ae60; color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; font-weight: bold; box-shadow: 0 2px 5px rgba(0,0,0,0.3); }
+        .sos-btn { background: #e74c3c; color: white; border: none; padding: 8px; border-radius: 4px; cursor: pointer; width: 100%; font-weight: bold; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <div id="loading">Connecting to Trip Plan... <span id="progress"></span></div>
+    <div id="map"></div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        const CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vRXv6-bYGpE2J4FCXwdDSoRDNl7UhseCyaURUhIEnF-ZkI12GS7UD0pM4UQIoe96EJPJJavGnCuAWbI/pub?gid=327253181&single=true&output=csv';
+
+        const cityCoords = {
+            'Trivandrum': [8.5241, 76.9366], 'Bangalore': [12.9716, 77.5946], 'Hyderabad': [17.3850, 78.4867],
+            'Nagpur': [21.1458, 79.0882], 'Kota': [25.1825, 75.8391], 'Jaipur': [26.9124, 75.7873],
+            'Amritsar': [31.6340, 74.8723], 'Srinagar': [34.0837, 74.7973], 'Kargil': [34.5539, 76.1330],
+            'Leh': [34.1526, 77.5771], 'Nubra': [34.6863, 77.5673], 'Pangong': [33.7595, 78.6674],
+            'Jispa': [32.6455, 77.1806], 'Manali': [32.2396, 77.1887], 'Shimla': [31.1048, 77.1734],
+            'Agra': [27.1767, 78.0081], 'Jhansi': [25.4484, 78.5685]
+        };
+
+        var map = L.map('map').setView([22.0, 78.0], 5);
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png').addTo(map);
+
+        var routeGroup = L.layerGroup().addTo(map);
+        var markerGroup = L.layerGroup().addTo(map);
+
+        async function loadData() {
+            try {
+                const response = await fetch(CSV_URL);
+                const csvText = await response.text();
+                
+                // Robust CSV parsing
+                const rows = csvText.split(/\r?\n/).map(row => {
+                    return row.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(cell => 
+                        cell.replace(/^"|"$/g, '').trim()
+                    );
+                });
+
+                const headers = rows[0];
+                let itinerary = [];
+
+                for(let i=1; i < rows.length; i++) {
+                    if (rows[i].length < 3) continue;
+                    let rowData = {};
+                    rows[i].forEach((val, idx) => { if(headers[idx]) rowData[headers[idx]] = val; });
+                    if(rowData['To']) itinerary.push(rowData);
+                }
+                
+                if(itinerary.length > 0) processTrip(itinerary);
+                else document.getElementById('loading').innerHTML = "⚠️ No destinations found in sheet.";
+
+            } catch (e) {
+                document.getElementById('loading').innerHTML = "⚠️ Connection Failed. Re-syncing...";
+                setTimeout(loadData, 5000);
+            }
+        }
+
+        async function processTrip(data) {
+            let lastPoint = cityCoords['Trivandrum'];
+
+            for (let row of data) {
+                let lat = parseFloat(row['Lat']);
+                let lng = parseFloat(row['Lng']);
+                let currentPoint = (!isNaN(lat) && !isNaN(lng)) ? [lat, lng] : cityCoords[row['To']];
+
+                if (currentPoint) {
+                    // Marker for stays
+                    L.marker(currentPoint, {
+                        icon: L.divIcon({ html: `<div style="background:#e74c3c; width:12px; height:12px; border-radius:50%; border:2px solid white; box-shadow: 0 0 5px rgba(0,0,0,0.5);"></div>`, className: '', iconSize: [12, 12] })
+                    }).bindPopup(`<b>Day ${row['Day']}: ${row['To']}</b><br>Stay: ${row['Night Stay']}`).addTo(markerGroup);
+
+                    // Route logic with caching
+                    let cacheKey = `route_v4_${row['From']}_${row['To']}_${JSON.stringify(currentPoint)}`;
+                    let cached = localStorage.getItem(cacheKey);
+                    let poly;
+
+                    if (cached) {
+                        poly = JSON.parse(cached);
+                    } else {
+                        try {
+                            let resp = await fetch(`https://router.project-osrm.org/route/v1/driving/${lastPoint[1]},${lastPoint[0]};${currentPoint[1]},${currentPoint[0]}?overview=full&geometries=geojson`);
+                            let res = await resp.json();
+                            if(res.routes && res.routes[0]) {
+                                poly = res.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
+                                localStorage.setItem(cacheKey, JSON.stringify(poly));
+                            }
+                            await new Promise(r => setTimeout(r, 600)); 
+                        } catch (e) { console.warn("Routing skipped for Day " + row['Day']); }
+                    }
+
+                    if(poly) {
+                        L.polyline(poly, { color: 'white', weight: 8, opacity: 0.4 }).addTo(routeGroup);
+                        L.polyline(poly, { color: '#3498db', weight: 4, opacity: 0.8 })
+                            .bindPopup(`<div class="info-box"><b>🗓️ Day ${row['Day']}</b><br>${row['From']} ➔ ${row['To']}<br><span class="hotel-tag">🏨 ${row['Night Stay']}</span><br><b>Stop:</b> ${row['Key Stops']}<br><b>Time:</b> ${row['Drive Time']}</div>`)
+                            .addTo(routeGroup);
+                    }
+                    lastPoint = currentPoint;
+                }
+                document.getElementById('progress').innerText = `Day ${row['Day']} Loaded`;
+            }
+            document.getElementById('loading').style.display = 'none';
+            addSyncBtn();
+        }
+
+        function addSyncBtn() {
+            var ctrl = L.control({position: 'topright'});
+            ctrl.onAdd = () => {
+                var div = L.DomUtil.create('div');
+                div.innerHTML = `<button class="refresh-btn" onclick="localStorage.clear(); location.reload();">🔄 Refresh Trip</button>`;
+                return div;
+            };
+            ctrl.addTo(map);
+        }
+
+        // GPS Location
+        var uMarker = L.circleMarker([0,0], { radius: 8, fillColor: "#1a73e8", color: "#fff", weight: 3, opacity: 1, fillOpacity: 1 });
+        var locateControl = L.control({position: 'topleft'});
+        locateControl.onAdd = function() {
+            var div = L.DomUtil.create('div', 'leaflet-bar');
+            div.style.background = 'white'; div.style.padding = '8px'; div.style.cursor = 'pointer'; div.style.fontWeight = 'bold';
+            div.innerHTML = '📍';
+            div.onclick = function() {
+                navigator.geolocation.watchPosition(pos => {
+                    let lat = pos.coords.latitude.toFixed(5), lng = pos.coords.longitude.toFixed(5);
+                    uMarker.setLatLng([lat, lng]).addTo(map).bindPopup(`<b>You</b><br><button class="sos-btn" onclick="navigator.clipboard.writeText('${lat},${lng}');alert('GPS Copied!')">🆘 Copy GPS</button>`);
+                    map.setView([lat, lng], 13);
+                }, null, {enableHighAccuracy: true});
+            };
+            return div;
+        };
+        locateControl.addTo(map);
+
+        loadData();
+    </script>
+</body>
+</html>
